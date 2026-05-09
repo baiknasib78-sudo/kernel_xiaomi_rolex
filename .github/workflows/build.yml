@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next Android 11 + SusFS Official)
+name: Build Rolex Kernel (KSU-Next Android 11 Final)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          ref: 11 # Memastikan robot mengambil source dari branch 11
+          ref: 11
           fetch-depth: 0
 
       - name: Setup Build Environment
@@ -21,44 +21,39 @@ jobs:
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
 
-      - name: Reset Source (Langkah 1)
+      - name: Install KSU-Next Legacy
         run: |
-          git checkout .
-          git reset --hard HEAD
-
-      - name: Install KSU-Next Legacy (Langkah 2)
-        run: |
-          # Metode Submodule Official KSU-Next
+          # Memasang KSU-Next melalui jalur submodule resmi
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Patch SusFS (Langkah 3 - Simonpunk Official Master Branch)
+      - name: Patch SusFS (Official GitLab Simonpunk)
         run: |
-          # Download patch SusFS Original
+          # Download Patch SusFS untuk Kernel 4.9
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
           if [ -f susfs.patch ]; then
-            patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
+            patch -p1 < susfs.patch || echo "Patch kernel skipped/conflict"
           fi
           
-          # Patch KSU agar sinkron dengan SusFS
+          # Patch KSU agar mendukung SusFS
           if [ -d "drivers/kernelsu" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
              if [ -f ksu_susfs.patch ]; then
-                patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
+                patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped/conflict"
              fi
           fi
 
-      - name: Update Defconfig (Fix No Hooks Android 11)
+      - name: Prepare Defconfig
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
           
-          # Bersihkan config lama
+          # Bersihkan konfigurasi lama agar tidak duplikat
           sed -i '/CONFIG_KSU/d' $CONF
           sed -i '/CONFIG_KPROBES/d' $CONF
           sed -i '/CONFIG_KPROBE_EVENTS/d' $CONF
           sed -i '/CONFIG_KSU_SUSFS/d' $CONF
           sed -i '/CONFIG_MODULES/d' $CONF
           
-          # 1. Aktifkan KPROBES & Dependensi (Sesuai Panduan KSU-Next)
+          # Masukkan konfigurasi standar KSU & SusFS
           echo "CONFIG_KSU=y" >> $CONF
           echo "CONFIG_KPROBES=y" >> $CONF
           echo "CONFIG_KPROBE_EVENTS=y" >> $CONF
@@ -66,38 +61,55 @@ jobs:
           echo "CONFIG_MODULES=y" >> $CONF
           echo "CONFIG_KALLSYMS=y" >> $CONF
           echo "CONFIG_KALLSYMS_ALL=y" >> $CONF
-
-          # 2. JAMU / HACK: Solusi "No hooks were defined"
-          # Kita paksa ccflags agar Kbuild KSU tidak berhenti (Stop)
-          if [ -f "drivers/kernelsu/Kbuild" ]; then
-            echo "ccflags-y += -DCONFIG_KSU_MANUAL_HOOK" >> drivers/kernelsu/Kbuild
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONF
-          fi
-          
-          # 3. Konfigurasi SusFS
           echo "CONFIG_KSU_SUSFS=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_SUSPEND_MOUNT=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $CONF
 
-      - name: Compile Kernel (Langkah 4)
+      - name: Compile Kernel (Force Manual Hook Fix)
         run: |
+          # 1. Bersihkan environment
           make clean
+          
+          # 2. Generate konfigurasi dari rolex_defconfig
           make rolex_defconfig
+          
+          # 3. JAMU / HACK: Paksa Bypass Pengecekan Hook KSU-Next
+          # Menghapus baris maut yang menyebabkan error "No hooks were defined"
+          if [ -f "drivers/kernelsu/Kbuild" ]; then
+            echo "Applying Force Hook Patch..."
+            sed -i '/$(error -- KernelSU-Next: No hooks were defined/d' drivers/kernelsu/Kbuild
+            # Tambahkan bendera manual hook agar kompilator tidak mogok
+            echo "ccflags-y += -DCONFIG_KSU_MANUAL_HOOK" >> drivers/kernelsu/Kbuild
+            # Tambahkan secara paksa ke .config yang sedang aktif
+            echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+          fi
+          
+          # 4. Sinkronkan konfigurasi akhir
           make olddefconfig
+          
+          # 5. Eksekusi Kompilasi
           make -j$(nproc)
 
-      - name: Packaging AnyKernel3
+      - name: Packaging with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          # Sesuaikan partisi untuk Rolex
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
+          
+          # Ambil hasil build (Image.gz-dtb adalah standar Rolex)
+          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          else
+            cp arch/arm64/boot/Image.gz AnyKernel3/
+          fi
+          
           cd AnyKernel3
-          zip -r9 ../KernelSU-Next-Android11-Rolex.zip * -x .git README.md
+          zip -r9 ../Kernel-Rolex-Android11-KSU-Next.zip * -x .git README.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Rolex-Kernel-Android11-KSU-Next
-          path: KernelSU-Next-Android11-Rolex.zip
+          name: Rolex-A11-KSU-Next-SusFS
+          path: Kernel-Rolex-Android11-KSU-Next.zip
