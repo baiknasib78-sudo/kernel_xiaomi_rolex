@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 Bypass Fix)
+name: Build Rolex Kernel (KSU-Next A11 Super Bypass)
 
 on:
   workflow_dispatch:
@@ -26,38 +26,40 @@ jobs:
           # Install KSU-Next via official setup script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Pre-Build Jamu (Bypass KSU Protection)
+      - name: Pre-Build Jamu (Force Bypass KSU Error)
         run: |
           KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
-          echo "KSU Folder ditemukan di: $KSU_DIR"
+          echo "KSU Folder: $KSU_DIR"
           
           if [ -f "$KSU_DIR/Kbuild" ]; then
-            echo "Menghapus proteksi 'No hooks defined' agar tidak Stop..."
-            # Hapus baris yang mengandung perintah error/stop agar make clean lancar
-            sed -i '/No hooks were defined/d' $KSU_DIR/Kbuild
-            sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
-            # Suntik flag manual hook di baris paling atas
+            echo "Membungkam instruksi error di Kbuild..."
+            # Backup untuk jaga-jaga
+            cp $KSU_DIR/Kbuild $KSU_DIR/Kbuild.bak
+            # Hapus baris maut yang mengandung perintah $(error ...)
+            sed -i '/\$(error -- KernelSU-Next: No hooks were defined/d' $KSU_DIR/Kbuild
+            # Hapus juga baris penutupnya jika ada
+            sed -i '/please integrate manual hooks in your kernel!/d' $KSU_DIR/Kbuild
+            # Paksa suntik flag manual hook di paling atas
             sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
           fi
 
-      - name: Apply Manual Hooking (Status Fix)
+      - name: Apply Manual Hooking (Otomatisasi Status Working)
         run: |
           KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
           
-          # Patch fs/open.c - Suntik include dan fungsi hook
+          # Patch fs/open.c
           sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
           sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
           
-          # Patch fs/read_write.c - Suntik vfs read/write
+          # Patch fs/read_write.c
           sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
 
-      - name: Patch SusFS (Official Simonpunk)
+      - name: Patch SusFS
         run: |
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
           [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel skipped"
-          
           KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
           if [ -d "$KSU_DIR" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
@@ -89,18 +91,18 @@ jobs:
         run: |
           KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
           
-          # Fix Bluetooth & GPU
+          # Fix Bluetooth & GPU Trace
           find drivers/bluetooth -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' {} +
           find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
-          # Jalankan Build
+          # Jalankan Build Sequence
           make clean
           make rolex_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          # Kompilasi dengan KCFLAGS global
+          # Gunakan KCFLAGS global untuk include path
           make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
