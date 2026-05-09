@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 Super Bypass)
+name: Build Rolex Kernel (KSU-Next A11 Ultimate Bypass)
 
 on:
   workflow_dispatch:
@@ -21,31 +21,29 @@ jobs:
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
 
-      - name: Install KSU-Next Legacy
+      - name: Install & Brutal Bypass KSU-Next
         run: |
-          # Install KSU-Next via official setup script
+          # 1. Install KSU
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-
-      - name: Pre-Build Jamu (Force Bypass KSU Error)
-        run: |
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
-          echo "KSU Folder: $KSU_DIR"
           
-          if [ -f "$KSU_DIR/Kbuild" ]; then
-            echo "Membungkam instruksi error di Kbuild..."
-            # Backup untuk jaga-jaga
-            cp $KSU_DIR/Kbuild $KSU_DIR/Kbuild.bak
-            # Hapus baris maut yang mengandung perintah $(error ...)
-            sed -i '/\$(error -- KernelSU-Next: No hooks were defined/d' $KSU_DIR/Kbuild
-            # Hapus juga baris penutupnya jika ada
-            sed -i '/please integrate manual hooks in your kernel!/d' $KSU_DIR/Kbuild
-            # Paksa suntik flag manual hook di paling atas
-            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
-          fi
+          # 2. Cari folder KSU (bisa kernelsu atau KernelSU-Next)
+          KSU_DIR=$(find drivers -maxdepth 2 -type d -name "*ernelsu*" | head -n 1)
+          echo "KSU_PATH=$KSU_DIR" >> $GITHUB_ENV
+          echo "Folder KSU ditemukan di: $KSU_DIR"
 
-      - name: Apply Manual Hooking (Otomatisasi Status Working)
+          # 3. Brutal Bypass: Hapus semua baris yang mengandung "error" dan "Stop" di Kbuild
+          # Kita gunakan -i agar perubahan permanen
+          sed -i '/No hooks were defined/d' $KSU_DIR/Kbuild
+          sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
+          sed -i '/\$(error/d' $KSU_DIR/Kbuild
+          
+          # 4. Suntik Flag Manual Hook sejak awal
+          sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
+
+      - name: Apply Manual Hooking (Otomatis Status Working)
         run: |
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          # Ambil path dari env
+          KSU_DIR=${{ env.KSU_PATH }}
           
           # Patch fs/open.c
           sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
@@ -53,46 +51,28 @@ jobs:
           
           # Patch fs/read_write.c
           sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
+          # Suntik sebelum return atau di akhir pengecekan ret
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
-
-      - name: Patch SusFS
-        run: |
-          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
-          [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel skipped"
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
-          if [ -d "$KSU_DIR" ]; then
-             curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
-             [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped"
-          fi
 
       - name: Update Defconfig
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
           sed -i '/CONFIG_KSU/d' $CONF
           sed -i '/CONFIG_KPROBES/d' $CONF
-          sed -i '/CONFIG_KSU_SUSFS/d' $CONF
           {
             echo "CONFIG_KSU=y"
             echo "CONFIG_KPROBES=y"
             echo "CONFIG_KPROBE_EVENTS=y"
-            echo "CONFIG_KSU_KPROBE_HOOKS=y"
             echo "CONFIG_KSU_MANUAL_HOOK=y"
-            echo "CONFIG_MODULES=y"
-            echo "CONFIG_KALLSYMS=y"
-            echo "CONFIG_KALLSYMS_ALL=y"
             echo "CONFIG_KSU_SUSFS=y"
-            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_SUSPEND_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: Compile Kernel
+      - name: Compile Kernel (Anti-Gagal)
         run: |
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          KSU_DIR=${{ env.KSU_PATH }}
           
-          # Fix Bluetooth & GPU Trace
-          find drivers/bluetooth -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' {} +
+          # Fix Path GPU & Bluetooth agar tidak error header
           find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
@@ -102,20 +82,18 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          # Gunakan KCFLAGS global untuk include path
-          make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
+          # KCFLAGS Global adalah kunci sukses di GitHub Actions
+          make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error"
 
-      - name: Packaging AnyKernel3
+      - name: Packaging
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
-          sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Final.zip * -x .git README.md
+          zip -r9 ../Kernel-Rolex-Final.zip *
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Rolex-A11-KSU-Next-Final
-          path: Kernel-Rolex-A11-KSU-Next-Final.zip
+          name: Rolex-Final-Kernel
+          path: Kernel-Rolex-Final.zip
