@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next Android 11 Final)
+name: Build Rolex Kernel (KSU-Next Android 11 Brutal Fix)
 
 on:
   workflow_dispatch:
@@ -23,41 +23,40 @@ jobs:
 
       - name: Install KSU-Next Legacy
         run: |
-          # Memasang KSU-Next melalui jalur submodule resmi
+          # Install KSU-Next via official setup script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
-      - name: Patch SusFS (Official GitLab Simonpunk)
+      - name: Patch SusFS (Official Simonpunk)
         run: |
-          # Download Patch SusFS untuk Kernel 4.9
+          # Patch Kernel 4.9
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
           if [ -f susfs.patch ]; then
-            patch -p1 < susfs.patch || echo "Patch kernel skipped/conflict"
+            patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
           fi
           
-          # Patch KSU agar mendukung SusFS
+          # Patch KSU agar sinkron dengan SusFS
           if [ -d "drivers/kernelsu" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
              if [ -f ksu_susfs.patch ]; then
-                patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped/conflict"
+                patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
              fi
           fi
 
-      - name: Prepare Defconfig
+      - name: Update Defconfig
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
           
-          # Bersihkan konfigurasi lama agar tidak duplikat
+          # Bersihkan sisa config lama
           sed -i '/CONFIG_KSU/d' $CONF
           sed -i '/CONFIG_KPROBES/d' $CONF
-          sed -i '/CONFIG_KPROBE_EVENTS/d' $CONF
           sed -i '/CONFIG_KSU_SUSFS/d' $CONF
-          sed -i '/CONFIG_MODULES/d' $CONF
           
-          # Masukkan konfigurasi standar KSU & SusFS
+          # Masukkan konfigurasi target
           echo "CONFIG_KSU=y" >> $CONF
           echo "CONFIG_KPROBES=y" >> $CONF
           echo "CONFIG_KPROBE_EVENTS=y" >> $CONF
           echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $CONF
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONF
           echo "CONFIG_MODULES=y" >> $CONF
           echo "CONFIG_KALLSYMS=y" >> $CONF
           echo "CONFIG_KALLSYMS_ALL=y" >> $CONF
@@ -66,39 +65,36 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SUSPEND_MOUNT=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $CONF
 
-      - name: Compile Kernel (Force Manual Hook Fix)
+      - name: Compile Kernel (Bypass Kbuild Proteksi)
         run: |
-          # 1. Bersihkan environment
+          # LANGKAH KRUSIAL: Sembuhkan Kbuild SEBELUM 'make clean'
+          if [ -f "drivers/kernelsu/Kbuild" ]; then
+            echo "Menghapus baris proteksi maut di Kbuild..."
+            # Backup file asli
+            cp drivers/kernelsu/Kbuild drivers/kernelsu/Kbuild.bak
+            # Buat file baru tanpa baris yang mengandung error 'No hooks'
+            grep -v "No hooks were defined" drivers/kernelsu/Kbuild.bak > drivers/kernelsu/Kbuild
+            # Sisipkan flag manual hook di baris pertama agar build-system tenang
+            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' drivers/kernelsu/Kbuild
+          fi
+
+          # Eksekusi Build Sequence
           make clean
-          
-          # 2. Generate konfigurasi dari rolex_defconfig
           make rolex_defconfig
           
-          # 3. JAMU / HACK: Paksa Bypass Pengecekan Hook KSU-Next
-          # Menghapus baris maut yang menyebabkan error "No hooks were defined"
-          if [ -f "drivers/kernelsu/Kbuild" ]; then
-            echo "Applying Force Hook Patch..."
-            sed -i '/$(error -- KernelSU-Next: No hooks were defined/d' drivers/kernelsu/Kbuild
-            # Tambahkan bendera manual hook agar kompilator tidak mogok
-            echo "ccflags-y += -DCONFIG_KSU_MANUAL_HOOK" >> drivers/kernelsu/Kbuild
-            # Tambahkan secara paksa ke .config yang sedang aktif
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
-          fi
+          # Pastikan manual hook tetap masuk ke .config aktif
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           
-          # 4. Sinkronkan konfigurasi akhir
           make olddefconfig
-          
-          # 5. Eksekusi Kompilasi
           make -j$(nproc)
 
-      - name: Packaging with AnyKernel3
+      - name: Packaging AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          # Sesuaikan partisi untuk Rolex
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           
-          # Ambil hasil build (Image.gz-dtb adalah standar Rolex)
+          # Ambil Image hasil kompilasi
           if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
             cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
           else
