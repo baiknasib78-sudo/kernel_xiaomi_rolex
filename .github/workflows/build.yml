@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 Fix Working Status)
+name: Build Rolex Kernel (KSU-Next A11 Normal Status)
 
 on:
   workflow_dispatch:
@@ -23,13 +23,16 @@ jobs:
 
       - name: Install KSU-Next Legacy
         run: |
+          # Install KSU-Next via official setup script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Patch SusFS (Official Simonpunk)
         run: |
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
           [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel skipped"
-          if [ -d "drivers/kernelsu" ]; then
+          
+          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          if [ -d "$KSU_DIR" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
              [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped"
           fi
@@ -55,45 +58,48 @@ jobs:
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: Apply Manual Hooking (Auto-Fix Abnormal Status)
+      - name: Apply Manual Hooking (Anti-Abnormal Fix)
         run: |
-          echo "Suntik Manual Hooks agar status Working (Hijau)..."
-          # Tambahkan include hooks ke fs/open.c
-          sed -i '/#include <linux\/string.h>/a #include "../drivers/kernelsu/hooks.h"' fs/open.c
-          # Tambahkan ksu_handle_fchmodat di dalam do_fchmodat (sebelum return)
-          # Ini adalah teknik mencari baris return terakhir di fungsi chmod
+          # Cari folder KSU yang benar
+          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          echo "KSU Folder: $KSU_DIR"
+          
+          # 1. Patch fs/open.c
+          sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
           sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
           
-          # Tambahkan hooks ke fs/read_write.c
-          sed -i '/#include <linux\/slab.h>/a #include "../drivers/kernelsu/hooks.h"' fs/read_write.c
-          # Suntik vfs_read dan vfs_write
+          # 2. Patch fs/read_write.c
+          sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
+          # Cari posisi vfs_read/write ret > 0 untuk suntik hooks
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
 
-      - name: Compile Kernel (Final Fixed Version)
+      - name: Compile Kernel (All-In-One Fix)
         run: |
+          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          
           # 1. JAMU KSU: Bypass proteksi Kbuild
-          if [ -f "drivers/kernelsu/Kbuild" ]; then
-            cp drivers/kernelsu/Kbuild drivers/kernelsu/Kbuild.bak
-            grep -v "No hooks were defined" drivers/kernelsu/Kbuild.bak > drivers/kernelsu/Kbuild
-            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' drivers/kernelsu/Kbuild
+          if [ -f "$KSU_DIR/Kbuild" ]; then
+            cp $KSU_DIR/Kbuild $KSU_DIR/Kbuild.bak
+            grep -v "No hooks were defined" $KSU_DIR/Kbuild.bak > $KSU_DIR/Kbuild
+            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
           fi
 
-          # 2. JAMU BLUETOOTH & GPU: Fix Path Header
+          # 2. JAMU BLUETOOTH & GPU
           find drivers/bluetooth -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' {} +
           find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           
-          # 3. FIX KGSL TRACE: Perbaiki path internal
+          # 3. FIX KGSL TRACE
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
-          # 4. Eksekusi Build Sequence
+          # 4. Build Sequence
           make clean
           make rolex_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          # 5. Jalankan Kompilasi dengan KCFLAGS Include (Lebih aman daripada edit Makefile utama)
-          make -j$(nproc) KCFLAGS="-I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
+          # 5. Kompilasi Final (Global Include KSU + GPU)
+          make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
         run: |
@@ -102,10 +108,10 @@ jobs:
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Working.zip * -x .git README.md
+          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Fixed.zip * -x .git README.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Rolex-A11-KSU-Next-Working
-          path: Kernel-Rolex-A11-KSU-Next-Working.zip
+          name: Rolex-A11-KSU-Next-Final
+          path: Kernel-Rolex-A11-KSU-Next-Fixed.zip
