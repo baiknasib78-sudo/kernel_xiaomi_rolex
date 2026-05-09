@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 + BT + GPU Fix)
+name: Build Rolex Kernel (KSU-Next A11 + BT + GPU Absolute Fix)
 
 on:
   workflow_dispatch:
@@ -23,34 +23,24 @@ jobs:
 
       - name: Install KSU-Next Legacy
         run: |
-          # Install KSU-Next via official setup script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Patch SusFS (Official Simonpunk)
         run: |
-          # Patch Kernel 4.9 & KSU
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
-          if [ -f susfs.patch ]; then
-            patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
-          fi
+          [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
           
           if [ -d "drivers/kernelsu" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
-             if [ -f ksu_susfs.patch ]; then
-                patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
-             fi
+             [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
           fi
 
       - name: Update Defconfig
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
-          
-          # Bersihkan sisa config lama
           sed -i '/CONFIG_KSU/d' $CONF
           sed -i '/CONFIG_KPROBES/d' $CONF
           sed -i '/CONFIG_KSU_SUSFS/d' $CONF
-          
-          # Masukkan konfigurasi target (KSU-Next + SusFS)
           {
             echo "CONFIG_KSU=y"
             echo "CONFIG_KPROBES=y"
@@ -66,35 +56,39 @@ jobs:
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: Compile Kernel (All-in-One Fix)
+      - name: Compile Kernel (GPU Absolute Fix)
         run: |
           # 1. JAMU KSU: Bypass proteksi Kbuild
           if [ -f "drivers/kernelsu/Kbuild" ]; then
-            echo "Bypassing KSU-Next Hook Check..."
             cp drivers/kernelsu/Kbuild drivers/kernelsu/Kbuild.bak
             grep -v "No hooks were defined" drivers/kernelsu/Kbuild.bak > drivers/kernelsu/Kbuild
             sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' drivers/kernelsu/Kbuild
           fi
 
-          # 2. JAMU BLUETOOTH: Fix btfm_slim.h missing
+          # 2. JAMU BLUETOOTH: Fix header path
           if [ -f "drivers/bluetooth/Makefile" ]; then
-            echo "Fixing Bluetooth Header Path..."
             sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' drivers/bluetooth/Makefile
           fi
 
-          # 3. JAMU GPU: Fix kgsl_trace.h missing
-          if [ -f "drivers/gpu/msm/Makefile" ]; then
-            echo "Fixing GPU Trace Header Path..."
+          # 3. JAMU GPU (KGSL): Fix kgsl_trace.h not found
+          # Kita gunakan jalur absolut include agar compiler tidak bingung dengan './'
+          if [ -d "drivers/gpu/msm" ]; then
+            echo "Fixing GPU Trace Header Path (Absolute)..."
+            # Cari file kgsl_trace.h dan paksa ganti path internalnya
+            find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
+            # Tambahkan ke Makefile GPU
             sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm' drivers/gpu/msm/Makefile
           fi
 
-          # 4. Eksekusi Build Sequence
+          # 4. HARDLINK FIX: Buat symlink file header ke root agar ./kgsl_trace.h terbaca
+          ln -s drivers/gpu/msm/kgsl_trace.h kgsl_trace.h || true
+
+          # 5. Eksekusi Build
           make clean
           make rolex_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          # 5. Kompilasi dengan pengabaian warning ketat agar tidak stop
           make -j$(nproc) KCFLAGS="-Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
@@ -102,14 +96,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
-          
-          # Ambil hasil kompilasi
-          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          else
-            cp arch/arm64/boot/Image.gz AnyKernel3/
-          fi
-          
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
           zip -r9 ../Kernel-Rolex-A11-KSU-Next-Fix.zip * -x .git README.md
 
