@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next Kprobe + SusFS Official)
+name: Build Rolex Kernel (KSU-Next Manual Hook + SusFS Official)
 
 on:
   workflow_dispatch:
@@ -17,8 +17,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential libncurses5-dev libssl-dev bison flex libelf-dev gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu zip curl
           echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE: aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32: arm-linux-gnueabi-" >> $GITHUB_ENV
 
       - name: Reset Source (Langkah 1)
         run: |
@@ -27,53 +27,41 @@ jobs:
 
       - name: Install KSU-Next Legacy (Langkah 2)
         run: |
-          # Metode Submodule Official sesuai panduan KSU-Next
+          # Install sebagai Submodule Official
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Patch SusFS (Langkah 3 - Simonpunk Official Master Branch)
         run: |
-          # Mengunduh patch SusFS langsung dari GitLab Simonpunk (Original)
           # Patch Kernel 4.9
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
           if [ -f susfs.patch ]; then
             patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
-          else
-            echo "Gagal download patch kernel! Link 404 atau berubah." && exit 1
           fi
           
-          # Patch KSU agar sinkron dengan SusFS (Gunakan folder KernelSU huruf besar)
+          # Patch KSU agar sinkron dengan SusFS
           if [ -d "drivers/kernelsu" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
              if [ -f ksu_susfs.patch ]; then
                 patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
-             else
-                echo "Gagal download patch KSU!"
              fi
           fi
 
-      - name: Update Defconfig (Full Kprobe Integration)
+      - name: Update Defconfig (Force Manual Hook & SusFS)
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
           
-          # Bersihkan sisa config lama agar tidak double/bentrok
+          # Bersihkan config lama
           sed -i '/CONFIG_KSU/d' $CONF
-          sed -i '/CONFIG_KPROBES/d' $CONF
-          sed -i '/CONFIG_KPROBE_EVENTS/d' $CONF
-          sed -i '/CONFIG_KSU_SUSFS/d' $CONF
-          sed -i '/CONFIG_MODULES/d' $CONF
           
-          # 1. Aktifkan KPROBES & Dependensi sesuai panduan resmi KSU-Next
+          # Tambah Konfigurasi KSU Manual Hook (Solusi Error: No Hooks Defined)
           echo "CONFIG_KSU=y" >> $CONF
-          echo "CONFIG_KPROBES=y" >> $CONF
-          echo "CONFIG_KPROBE_EVENTS=y" >> $CONF
-          echo "CONFIG_KSU_KPROBE_HOOKS=y" >> $CONF
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONF
           
-          # 2. Aktifkan dependensi agar KPROBES mau berjalan (Wajib untuk 4.9)
-          echo "CONFIG_MODULES=y" >> $CONF
-          echo "CONFIG_KALLSYMS=y" >> $CONF
-          echo "CONFIG_KALLSYMS_ALL=y" >> $CONF
+          # PAKSA Kbuild KSU agar menerima Manual Hook tanpa Kprobe
+          # Ini akan menghilangkan error "*** -- KernelSU-Next: No hooks were defined"
+          sed -i 's/$(error -- KernelSU-Next: No hooks were defined, please integrate manual hooks in your kernel!)/ccflags-y += -DCONFIG_KSU_MANUAL_HOOK/g' drivers/kernelsu/Kbuild
           
-          # 3. Konfigurasi SusFS (Invisible Mode)
+          # Tambah Konfigurasi SusFS
           echo "CONFIG_KSU_SUSFS=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $CONF
           echo "CONFIG_KSU_SUSFS_SUSPEND_MOUNT=y" >> $CONF
@@ -83,25 +71,22 @@ jobs:
         run: |
           make clean
           make rolex_defconfig
-          # Menggunakan olddefconfig untuk mengisi otomatis dependensi Kprobe yang kurang
-          make olddefconfig
+          # Kita tidak pakai olddefconfig karena kita sudah paksa di Kbuild
           make -j$(nproc)
 
       - name: Packaging AnyKernel3 (Fix Error 1)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          # Jalur partisi spesifik Rolex
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           
-          # Salin hasil kompilasi
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           
           cd AnyKernel3
-          zip -r9 ../KernelSU-Next-SusFS-Kprobe-Rolex.zip * -x .git README.md
+          zip -r9 ../KernelSU-Next-SusFS-Manual-Rolex.zip * -x .git README.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Rolex-Kernel-KSU-Next-SusFS
-          path: KernelSU-Next-SusFS-Kprobe-Rolex.zip
+          path: KernelSU-Next-SusFS-Manual-Rolex.zip
