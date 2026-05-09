@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 + GPU All-In Fix)
+name: Build Rolex Kernel (KSU-Next A11 + GPU Super Brutal Fix)
 
 on:
   workflow_dispatch:
@@ -23,16 +23,17 @@ jobs:
 
       - name: Install KSU-Next Legacy
         run: |
+          # Install KSU-Next Submodule
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
 
       - name: Patch SusFS (Official Simonpunk)
         run: |
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
-          [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel conflict ignored"
+          [ -f susfs.patch ] && patch -p1 < susfs.patch || echo "Patch kernel skipped"
           
           if [ -d "drivers/kernelsu" ]; then
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
-             [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU conflict ignored"
+             [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped"
           fi
 
       - name: Update Defconfig
@@ -56,21 +57,21 @@ jobs:
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: Compile Kernel (GPU & Bluetooth Global Fix)
+      - name: Compile Kernel (Super Brutal Fix)
         run: |
           # 1. JAMU KSU: Bypass proteksi Kbuild
           if [ -f "drivers/kernelsu/Kbuild" ]; then
+            echo "Bypassing KSU-Next Hook Check..."
             cp drivers/kernelsu/Kbuild drivers/kernelsu/Kbuild.bak
             grep -v "No hooks were defined" drivers/kernelsu/Kbuild.bak > drivers/kernelsu/Kbuild
             sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' drivers/kernelsu/Kbuild
           fi
 
-          # 2. JAMU BLUETOOTH & GPU: Fix Header Path secara Brutal
-          # Cari semua Makefile di folder bermasalah dan suntikkan jalur include-nya
+          # 2. JAMU BLUETOOTH & GPU: Inject ke Makefile lokal
           find drivers/bluetooth -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' {} +
-          find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm' {} +
+          find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           
-          # 3. FIX KGSL TRACE: Perbaiki path internal file trace
+          # 3. FIX KGSL TRACE: Perbaiki path internal file trace agar tidak cari ke './'
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
           # 4. Eksekusi Build Sequence
@@ -79,8 +80,12 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          # 5. Kompilasi dengan KCFLAGS Global (Menambahkan folder msm ke pencarian header utama)
-          make -j$(nproc) KCFLAGS="-I$(srctree)/drivers/gpu/msm -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
+          # 5. SENJATA PAMUNGKAS: Paksa include path GPU ke variabel LINUXINCLUDE di Makefile utama
+          # Ini akan memastikan SEMUA file .c bisa melihat folder GPU MSM
+          sed -i 's|^LINUXINCLUDE.*|& -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno|' Makefile
+
+          # 6. Kompilasi Final
+          make -j$(nproc) KCFLAGS="-Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
         run: |
@@ -89,10 +94,10 @@ jobs:
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Final.zip * -x .git README.md
+          zip -r9 ../Kernel-Rolex-A11-KSU-Next-SuperFix.zip * -x .git README.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Rolex-A11-KSU-Next-SusFS
-          path: Kernel-Rolex-A11-KSU-Next-Final.zip
+          path: Kernel-Rolex-A11-KSU-Next-SuperFix.zip
