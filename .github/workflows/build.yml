@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next + SusFS + Anti-Stop)
+name: Build Rolex Kernel (KSU-Next + SusFS + Manual Hook Final)
 
 on:
   workflow_dispatch:
@@ -21,53 +21,51 @@ jobs:
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
 
-      - name: 1. Install KSU-Next Legacy
+      - name: 1. Install KSU-Next & Set Path
         run: |
+          # Install KSU Legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          # Cari folder KSU dan simpan ke ENV
-          KSU_DIR=$(find drivers -maxdepth 2 -type d -name "*ernelsu*" | head -n 1)
-          echo "KSU_DIR=$KSU_DIR" >> $GITHUB_ENV
+          
+          # Kita pakai path statis yang pasti dibuat oleh script setup.sh
+          KSU_PATH="drivers/kernelsu"
+          echo "KSU_DIR=$KSU_PATH" >> $GITHUB_ENV
+          echo "Path KSU diset ke: $KSU_PATH"
 
-      - name: 2. Nuclear Bypass KSU Protection
+      - name: 2. Patch SusFS (Official Simonpunk)
         run: |
-          KSU_DIR=${{ env.KSU_DIR }}
-          echo "Membungkam proteksi di $KSU_DIR/Kbuild"
-          # Timpa Kbuild agar tidak ada pengecekan 'No hooks defined'
-          cat <<EOF > $KSU_DIR/Kbuild
-          ccflags-y += -DCONFIG_KSU_MANUAL_HOOK
-          obj-y += ksnext.o
-          ksnext-y := \$(patsubst \$(srctree)/\$(src)/%.c, %.o, \$(wildcard \$(srctree)/\$(src)/*.c))
-          ksnext-y += \$(patsubst \$(srctree)/\$(src)/%.S, %.o, \$(wildcard \$(srctree)/\$(src)/*.S))
-          EOF
+          # Download Patch untuk Kernel 4.9
+          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
+          patch -p1 < susfs.patch || echo "SusFS Kernel Patch Failed"
+          
+          # Patch KSU agar menu SusFS muncul
+          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
+          patch -p1 < ksu_susfs.patch || echo "SusFS KSU Patch Failed"
 
-      - name: 3. Apply Manual Hooking (Status Working)
+      - name: 3. Bypass KSU Protection & Apply Manual Hook
         run: |
-          KSU_DIR=${{ env.KSU_DIR }}
-          # Suntik fs/open.c
+          KSU_DIR="${{ env.KSU_DIR }}"
+          
+          # Hapus proteksi yang bikin Stop
+          if [ -f "$KSU_DIR/Kbuild" ]; then
+            sed -i '/No hooks were defined/d' "$KSU_DIR/Kbuild"
+            sed -i '/integrate manual hooks/d' "$KSU_DIR/Kbuild"
+            sed -i '/\$(error/d' "$KSU_DIR/Kbuild"
+            echo "ccflags-y += -DCONFIG_KSU_MANUAL_HOOK" >> "$KSU_DIR/Kbuild"
+          fi
+
+          # Manual Hooking (Agar Status Hijau / Working)
+          # fs/open.c
           sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
           sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
-          # Suntik fs/read_write.c
+          
+          # fs/read_write.c
           sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
           sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
 
-      - name: 4. Patch SusFS (Official Simonpunk)
-        run: |
-          # Patch Kernel 4.9
-          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/50_add_susfs_in_kernel-4.9.patch" -o susfs.patch
-          patch -p1 < susfs.patch || echo "SusFS Kernel Patch Failed"
-          
-          # Patch KSU-Next (agar SusFS muncul di menu KSU)
-          KSU_DIR=${{ env.KSU_DIR }}
-          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
-          # Sesuaikan path dalam patch jika foldernya bukan 'drivers/kernelsu'
-          sed -i "s|drivers/kernelsu|$KSU_DIR|g" ksu_susfs.patch
-          patch -p1 < ksu_susfs.patch || echo "SusFS KSU Patch Failed"
-
-      - name: 5. Update Defconfig
+      - name: 4. Update Defconfig
         run: |
           CONF="arch/arm64/configs/rolex_defconfig"
-          # Hapus config lama agar tidak duplikat
           sed -i '/CONFIG_KSU/d' $CONF
           sed -i '/CONFIG_KPROBES/d' $CONF
           sed -i '/CONFIG_KSU_SUSFS/d' $CONF
@@ -82,10 +80,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: 6. Compile Kernel
+      - name: 5. Compile Kernel
         run: |
-          KSU_DIR=${{ env.KSU_DIR }}
-          # Fix Path GPU
+          KSU_DIR="${{ env.KSU_DIR }}"
+          
+          # Fix Header GPU & Bluetooth
           find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
@@ -94,18 +93,19 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
+          # Compile dengan KCFLAGS untuk include KSU
           make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error"
 
-      - name: 7. Packaging
+      - name: 6. Packaging AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../Kernel-Rolex-KSU-SusFS-Working.zip *
+          zip -r9 ../Kernel-Rolex-A11-KSU-SusFS-Final.zip *
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Rolex-KSU-Next-SusFS
-          path: Kernel-Rolex-KSU-SusFS-Working.zip
+          path: Kernel-Rolex-A11-KSU-SusFS-Final.zip
