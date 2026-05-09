@@ -23,7 +23,35 @@ jobs:
 
       - name: Install KSU-Next Legacy
         run: |
+          # Install KSU-Next via official setup script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+      - name: Pre-Build Jamu (Bypass KSU Protection)
+        run: |
+          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          echo "KSU Folder ditemukan di: $KSU_DIR"
+          
+          if [ -f "$KSU_DIR/Kbuild" ]; then
+            echo "Menghapus proteksi 'No hooks defined' agar tidak Stop..."
+            # Hapus baris yang mengandung perintah error/stop agar make clean lancar
+            sed -i '/No hooks were defined/d' $KSU_DIR/Kbuild
+            sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
+            # Suntik flag manual hook di baris paling atas
+            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
+          fi
+
+      - name: Apply Manual Hooking (Status Fix)
+        run: |
+          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
+          
+          # Patch fs/open.c - Suntik include dan fungsi hook
+          sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
+          sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
+          
+          # Patch fs/read_write.c - Suntik vfs read/write
+          sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
+          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
+          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
 
       - name: Patch SusFS (Official Simonpunk)
         run: |
@@ -35,35 +63,6 @@ jobs:
              curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/master/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" -o ksu_susfs.patch
              [ -f ksu_susfs.patch ] && patch -p1 < ksu_susfs.patch || echo "Patch KSU skipped"
           fi
-
-      - name: Pre-Build Jamu (Bypass KSU Protection)
-        run: |
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
-          echo "KSU Folder ditemukan di: $KSU_DIR"
-          
-          if [ -f "$KSU_DIR/Kbuild" ]; then
-            echo "Menghapus proteksi 'No hooks defined' agar tidak Stop..."
-            # Backup original
-            cp $KSU_DIR/Kbuild $KSU_DIR/Kbuild.bak
-            # Hapus baris yang mengandung pesan error dan perintah Stop
-            sed -i '/No hooks were defined/d' $KSU_DIR/Kbuild
-            sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
-            # Suntik flag manual hook di baris pertama
-            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' $KSU_DIR/Kbuild
-          fi
-
-      - name: Apply Manual Hooking (Status Fix)
-        run: |
-          KSU_DIR=$(find drivers -maxdepth 1 -type d -name "kernelsu*" | head -n 1)
-          
-          # Patch fs/open.c
-          sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
-          sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
-          
-          # Patch fs/read_write.c
-          sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
-          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
-          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
 
       - name: Update Defconfig
         run: |
@@ -95,12 +94,13 @@ jobs:
           find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
           find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
-          # Build Sequence
+          # Jalankan Build
           make clean
           make rolex_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
+          # Kompilasi dengan KCFLAGS global
           make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
