@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 Ultimate Bypass)
+name: Build Rolex Kernel (KSU-Next A11 Final Fix)
 
 on:
   workflow_dispatch:
@@ -23,18 +23,84 @@ jobs:
 
       - name: Install & Brutal Bypass KSU-Next
         run: |
-          # 1. Install KSU
+          # 1. Install KSU via Official Script
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # 2. Cari folder KSU (bisa kernelsu atau KernelSU-Next)
-          KSU_DIR=$(find drivers -maxdepth 2 -type d -name "*ernelsu*" | head -n 1)
-          echo "KSU_PATH=$KSU_DIR" >> $GITHUB_ENV
-          echo "Folder KSU ditemukan di: $KSU_DIR"
+          # 2. Cari lokasi Kbuild (kita cari file-nya langsung, bukan foldernya)
+          KBUILD_PATH=$(find . -name "Kbuild" | grep "kernelsu" | head -n 1)
+          KSU_DIR=$(dirname "$KBUILD_PATH")
+          
+          # Bersihkan path agar rapi (hapus ./ di depan)
+          KSU_DIR_CLEAN=$(echo $KSU_DIR | sed 's|^\./||')
+          
+          echo "KSU_PATH=$KSU_DIR_CLEAN" >> $GITHUB_ENV
+          echo "Folder KSU ditemukan di: $KSU_DIR_CLEAN"
 
-          # 3. Brutal Bypass: Hapus semua baris yang mengandung "error" dan "Stop" di Kbuild
-          # Kita gunakan -i agar perubahan permanen
-          sed -i '/No hooks were defined/d' $KSU_DIR/Kbuild
-          sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
+          # 3. Brutal Bypass Proteksi
+          if [ -f "$KSU_DIR_CLEAN/Kbuild" ]; then
+            echo "Membungkam instruksi Stop di $KSU_DIR_CLEAN/Kbuild"
+            sed -i '/No hooks were defined/d' "$KSU_DIR_CLEAN/Kbuild"
+            sed -i '/integrate manual hooks/d' "$KSU_DIR_CLEAN/Kbuild"
+            sed -i '/\$(error/d' "$KSU_DIR_CLEAN/Kbuild"
+            sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' "$KSU_DIR_CLEAN/Kbuild"
+          else
+            echo "ERROR: Kbuild tidak ditemukan!" && exit 1
+          fi
+
+      - name: Apply Manual Hooking (Status Working)
+        run: |
+          KSU_DIR=${{ env.KSU_PATH }}
+          
+          # Patch fs/open.c
+          sed -i "/#include <linux\/string.h>/a #include <../$KSU_DIR/hooks.h>" fs/open.c
+          sed -i '/return error;/i \	ksu_handle_fchmodat(dfd, filename, mode);' fs/open.c
+          
+          # Patch fs/read_write.c
+          sed -i "/#include <linux\/slab.h>/a #include <../$KSU_DIR/hooks.h>" fs/read_write.c
+          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_read(file, buf, count, pos);' fs/read_write.c
+          sed -i '/if (ret > 0)/i \	ksu_handle_vfs_write(file, buf, count, pos);' fs/read_write.c
+
+      - name: Update Defconfig
+        run: |
+          CONF="arch/arm64/configs/rolex_defconfig"
+          sed -i '/CONFIG_KSU/d' $CONF
+          sed -i '/CONFIG_KPROBES/d' $CONF
+          {
+            echo "CONFIG_KSU=y"
+            echo "CONFIG_KPROBES=y"
+            echo "CONFIG_KPROBE_EVENTS=y"
+            echo "CONFIG_KSU_MANUAL_HOOK=y"
+          } >> $CONF
+
+      - name: Compile Kernel
+        run: |
+          KSU_DIR=${{ env.KSU_PATH }}
+          
+          # Fix Path GPU & Bluetooth
+          find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno' {} +
+          find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
+
+          make clean
+          make rolex_defconfig
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
+          make olddefconfig
+          
+          make -j$(nproc) KCFLAGS="-I$(srctree)/$KSU_DIR -I$(srctree)/drivers/gpu/msm -I$(srctree)/drivers/gpu/msm/adreno -Wno-error"
+
+      - name: Packaging
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          # Sesuaikan dengan Rolex (biasanya boot partition)
+          sed -i 's|block=.*|block=/dev/block/bootdevice/by-name/boot;|' AnyKernel3/anykernel.sh
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../Kernel-Rolex-Fixed-KSU.zip *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rolex-Fixed-Kernel
+          path: Kernel-Rolex-Fixed-KSU.zip          sed -i '/integrate manual hooks/d' $KSU_DIR/Kbuild
           sed -i '/\$(error/d' $KSU_DIR/Kbuild
           
           # 4. Suntik Flag Manual Hook sejak awal
