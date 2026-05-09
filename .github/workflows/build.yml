@@ -1,4 +1,4 @@
-name: Build Rolex Kernel (KSU-Next A11 + BT + GPU Absolute Fix)
+name: Build Rolex Kernel (KSU-Next A11 + GPU All-In Fix)
 
 on:
   workflow_dispatch:
@@ -56,7 +56,7 @@ jobs:
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
           } >> $CONF
 
-      - name: Compile Kernel (GPU Absolute Fix)
+      - name: Compile Kernel (GPU & Bluetooth Global Fix)
         run: |
           # 1. JAMU KSU: Bypass proteksi Kbuild
           if [ -f "drivers/kernelsu/Kbuild" ]; then
@@ -65,31 +65,22 @@ jobs:
             sed -i '1i ccflags-y += -DCONFIG_KSU_MANUAL_HOOK' drivers/kernelsu/Kbuild
           fi
 
-          # 2. JAMU BLUETOOTH: Fix header path
-          if [ -f "drivers/bluetooth/Makefile" ]; then
-            sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' drivers/bluetooth/Makefile
-          fi
+          # 2. JAMU BLUETOOTH & GPU: Fix Header Path secara Brutal
+          # Cari semua Makefile di folder bermasalah dan suntikkan jalur include-nya
+          find drivers/bluetooth -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/bluetooth' {} +
+          find drivers/gpu/msm -name "Makefile" -exec sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm' {} +
+          
+          # 3. FIX KGSL TRACE: Perbaiki path internal file trace
+          find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
 
-          # 3. JAMU GPU (KGSL): Fix kgsl_trace.h not found
-          # Kita gunakan jalur absolut include agar compiler tidak bingung dengan './'
-          if [ -d "drivers/gpu/msm" ]; then
-            echo "Fixing GPU Trace Header Path (Absolute)..."
-            # Cari file kgsl_trace.h dan paksa ganti path internalnya
-            find drivers/gpu/msm -name "kgsl_trace.h" -exec sed -i 's|#define TRACE_INCLUDE_PATH .|#define TRACE_INCLUDE_PATH ../../drivers/gpu/msm|g' {} +
-            # Tambahkan ke Makefile GPU
-            sed -i '1i ccflags-y += -I$(srctree)/drivers/gpu/msm' drivers/gpu/msm/Makefile
-          fi
-
-          # 4. HARDLINK FIX: Buat symlink file header ke root agar ./kgsl_trace.h terbaca
-          ln -s drivers/gpu/msm/kgsl_trace.h kgsl_trace.h || true
-
-          # 5. Eksekusi Build
+          # 4. Eksekusi Build Sequence
           make clean
           make rolex_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> .config
           make olddefconfig
           
-          make -j$(nproc) KCFLAGS="-Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
+          # 5. Kompilasi dengan KCFLAGS Global (Menambahkan folder msm ke pencarian header utama)
+          make -j$(nproc) KCFLAGS="-I$(srctree)/drivers/gpu/msm -Wno-error -Wno-misleading-indentation -Wno-maybe-uninitialized -Wno-duplicate-decl-specifier"
 
       - name: Packaging AnyKernel3
         run: |
@@ -98,10 +89,10 @@ jobs:
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           cd AnyKernel3
-          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Fix.zip * -x .git README.md
+          zip -r9 ../Kernel-Rolex-A11-KSU-Next-Final.zip * -x .git README.md
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Rolex-A11-KSU-Next-SusFS
-          path: Kernel-Rolex-A11-KSU-Next-Fix.zip
+          path: Kernel-Rolex-A11-KSU-Next-Final.zip
