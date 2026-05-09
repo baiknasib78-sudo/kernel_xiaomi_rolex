@@ -31,25 +31,36 @@ jobs:
 
       - name: Patch SusFS (Langkah 3)
         run: |
-          # Ambil patch SusFS resmi untuk kernel 4.9
-          git clone https://gitlab.com/crackevans/susfs4ksu.git ../susfs
+          # Ambil patch SusFS dari Mirror GitHub agar tidak error login GitLab
+          git clone https://github.com/sidex15/ksu_susfs.git ../susfs
           
           # Patch Kernel (Legacy 4.9)
-          cp ../susfs/kernel_patches/50_add_susfs_in_kernel-4.9.patch .
+          # Mencari file patch di folder yang umum digunakan pada mirror
+          if [ -f "../susfs/Kernel_Patch/50_add_susfs_in_kernel-4.9.patch" ]; then
+             cp ../susfs/Kernel_Patch/50_add_susfs_in_kernel-4.9.patch .
+          else
+             cp ../susfs/kernel_patches/50_add_susfs_in_kernel-4.9.patch .
+          fi
           patch -p1 < 50_add_susfs_in_kernel-4.9.patch || echo "Patch kernel conflict ignored"
           
           # Patch KSU agar sinkron dengan SusFS
-          # Kami mencari file patch yang sesuai untuk mengaktifkan fungsi SusFS di KSU
           if [ -d "drivers/kernelsu" ]; then
-             cp ../susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
+             if [ -f "../susfs/KernelSU_Patch/10_enable_susfs_for_ksu.patch" ]; then
+                cp ../susfs/KernelSU_Patch/10_enable_susfs_for_ksu.patch .
+             else
+                cp ../susfs/kernelsu_patch/10_enable_susfs_for_ksu.patch .
+             fi
              patch -p1 < 10_enable_susfs_for_ksu.patch || echo "Patch KSU conflict ignored"
           fi
 
       - name: Update Defconfig (Langkah 2 & 3)
         run: |
+          # Pastikan file ini sesuai dengan nama defconfig di repo kamu
           CONF="arch/arm64/configs/rolex_defconfig"
+          
           # Hapus manual hook jika ada agar tidak bentrok dengan submodule
           sed -i '/CONFIG_KSU_MANUAL_HOOK/d' $CONF
+          
           # Tambah Konfigurasi KSU & SusFS
           echo "CONFIG_KSU=y" >> $CONF
           echo "CONFIG_KSU_SUSFS=y" >> $CONF
@@ -71,7 +82,8 @@ jobs:
           sed -i 's|is_slot_device=.*|is_slot_device=0;|' AnyKernel3/anykernel.sh
           
           # Salin hasil kompilasi kernel
-          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          # Pastikan path Image.gz-dtb benar sesuai hasil build kernel kamu
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/ || cp arch/arm64/boot/Image.gz AnyKernel3/
           
           # Buat file ZIP dengan struktur FLAT
           cd AnyKernel3
